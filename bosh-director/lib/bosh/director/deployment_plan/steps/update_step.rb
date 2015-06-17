@@ -37,11 +37,13 @@ module Bosh::Director
           delete_unneeded_instances
 
           @logger.info('Updating resource pools')
+          # this just creates vms that don't exist yet for @deployment_plan.jobs_starting_on_deploy
           @resource_pools.update
           @base_job.task_checkpoint
 
           @logger.info('Binding instance VMs')
-          bind_instance_vms
+          # this just associates vms and instance models in the db
+          bind_crazy_unbound_vm_models(@deployment_plan.jobs_starting_on_deploy)
 
           @event_log.begin_stage('Preparing configuration', 1)
           @base_job.track_and_log('Binding configuration') do
@@ -60,12 +62,24 @@ module Bosh::Director
 
         private
 
-        def bind_instance_vms
-          jobs = @deployment_plan.jobs_starting_on_deploy
-          instances = jobs.map(&:instances).flatten
+        # somehow, we end up with instances that have an instance.vm.model
+        # and an instance.model, but have not associated the two models.
+        # a.k.a. instance.model.vm == nil && instance.vm.model != nil
+        # there is no good reason for this! we should fix how instances
+        # are prepared so that they cannot be in this state.
+        def bind_crazy_unbound_vm_models(jobs)
+          jobs.each do |job|
+            job.instances.each do |instance|
+              return if instance.state == 'detached'
 
-          binder = DeploymentPlan::InstanceVmBinder.new(@event_log)
-          binder.bind_instance_vms(instances)
+              errorMsg = ""
+              errorMsg += "\n vms model missing" if instance.vm.model.nil?
+              errorMsg += "\n instance model's vm doesnt mach vms model" if instance.model.vm != instance.vm.model
+              errorMsg += "\n vms instance not equal to instance" if instance.vm.bound_instance != instance
+
+              raise Exception "INSTANCE IS CRAY CRAY:#{instance.inspect}"+errorMsg unless errorMsg.empty?
+            end
+          end
         end
 
         def delete_unneeded_vms
